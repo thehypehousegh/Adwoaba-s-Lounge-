@@ -20,7 +20,7 @@ You only do this once. It takes about 15 minutes.
 2. Pick a location close to Ghana, for example `europe-west1 (Belgium)` or `africa-south1 (Johannesburg)`. This cannot be changed later.
 3. Start in **production mode**.
 4. Open the **Rules** tab, delete what is there, and paste in the contents of `firestore.rules` from this repository.
-5. In the pasted rules, replace `'REPLACE_WITH_STAFF_EMAIL@example.com'` with the staff emails from step 2, each in quotes and in lowercase, separated by commas:
+5. Check the staff list in the pasted rules matches the staff emails from step 2 (each in quotes, lowercase, separated by commas):
 
    ```
    && request.auth.token.email.lower() in [

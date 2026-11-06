@@ -6,7 +6,8 @@ service cloud.firestore {
     function isStaff() {
       return request.auth != null
         && request.auth.token.email.lower() in [
-          'REPLACE_WITH_STAFF_EMAIL@example.com'
+          'freshabi577@gmail.com',
+          'lordjasto59@gmail.com'
         ];
     }
 
