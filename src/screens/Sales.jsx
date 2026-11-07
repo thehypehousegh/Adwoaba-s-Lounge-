@@ -1,20 +1,30 @@
 import React, { useState } from 'react';
 import { createSale, saveCustomer, updateSale, useStore, voidSale } from '../store.jsx';
 import { Chips, Empty, Field, Header, Icon, Loading, Modal, Page, ProductPicker, SearchBox, useNav } from '../ui.jsx';
+import { VariantGrid } from './Stock.jsx';
 import {
   DELIVERY_STATUSES,
   PAYMENT_METHODS,
+  allocateFIFO,
+  dayToTimestamp,
+  defaultSalePrice,
   fmtDate,
   fmtDay,
   fmtTime,
-  fromInputDate,
   matches,
   money,
+  moneyOr,
+  num,
   sizeLabel,
   sortedSizes,
   startOfDay,
+  sum,
   toInputDate,
+  variantCost,
 } from '../util.js';
+
+const lineTotal = (it) => (it.price == null ? 0 : it.qty * it.price);
+export const saleTotal = (items) => sum(items, lineTotal);
 
 /* ---------- Shared row ---------- */
 export function SaleRow({ sale, sub }) {
@@ -27,6 +37,7 @@ export function SaleRow({ sale, sub }) {
         <div className="row-title">
           {sale.customerName || 'Walk-in'}
           {sale.delivery && <span className={`pill ${statusTone(sale.delivery.status)}`}>{sale.delivery.status}</span>}
+          {sale.priceMissing && <span className="pill out">Price missing</span>}
         </div>
         <div className="row-sub ellipsis">{items} item{items === 1 ? '' : 's'}: {names}</div>
         <div className="row-sub">{sub} · {sale.paymentMethod}</div>
@@ -56,7 +67,7 @@ export function NewSale({ productId, customerId, pushed }) {
 
   if (s.loading) return (<><Header title="New sale" back={!!pushed} /><Loading /></>);
 
-  const total = items.reduce((a, it) => a + it.qty * it.price, 0);
+  const total = saleTotal(items);
 
   function chooseCustomer(c) {
     setCustomer(c);
@@ -82,13 +93,34 @@ export function NewSale({ productId, customerId, pushed }) {
       });
     if (short.length && !confirm(`Not enough stock recorded for:\n${short.join('\n')}\n\nSave the sale anyway? Stock will go below zero.`)) return;
 
-    const day = fromInputDate(date);
-    const isToday = day === startOfDay(Date.now());
-    const when = isToday ? Date.now() : day + 12 * 3600000;
+    // Take each item out of the oldest delivery first.
+    const pool = {};
+    const allocated = items.map((it) => {
+      const key = it.productId + '|' + it.size;
+      pool[key] = pool[key] || s.lotsFor(it.productId, it.size).map((l) => ({ ...l }));
+      const lots = allocateFIFO(pool[key], it.qty);
+      const p = s.productById[it.productId];
+      let cost = 0;
+      let known = true;
+      let lotted = 0;
+      for (const r of lots) {
+        const c = s.lotById[r.lotId]?.unitCost ?? variantCost(p, it.size);
+        lotted += r.qty;
+        if (c == null) known = false;
+        else cost += c * r.qty;
+      }
+      if (lotted < it.qty) {
+        const c = variantCost(p, it.size);
+        if (c == null) known = false;
+        else cost += c * (it.qty - lotted);
+      }
+      return { ...it, lots, cost: known ? cost / it.qty : null };
+    });
     const id = createSale({
-      date: when,
-      items,
+      date: dayToTimestamp(date),
+      items: allocated,
       total,
+      priceMissing: allocated.some((it) => it.price == null),
       paymentMethod: payment,
       customerId: customer?.id || null,
       customerName: customer?.name || '',
@@ -114,9 +146,9 @@ export function NewSale({ productId, customerId, pushed }) {
             <div className="row static" key={i}>
               <div className="row-main">
                 <div className="row-title">{it.productName}</div>
-                <div className="row-sub">Size {sizeLabel(it.size, s.productById[it.productId])} · {it.qty} × {money(it.price)}</div>
+                <div className="row-sub">{sizeLabel(it.size, s.productById[it.productId])} · {it.qty} × {moneyOr(it.price, 'price missing')}</div>
               </div>
-              <div className="row-end">{money(it.qty * it.price)}</div>
+              <div className="row-end">{it.price == null ? '' : money(it.qty * it.price)}</div>
               <button className="icon-btn" onClick={() => setItems(items.filter((_, j) => j !== i))} aria-label="Remove"><Icon name="x" size={18} /></button>
             </div>
           ))}
@@ -175,44 +207,36 @@ function AddItem({ initialProductId, onAdd, onClose }) {
   const p = pid ? s.productById[pid] : null;
   const [size, setSize] = useState(null);
   const [qty, setQty] = useState(1);
-  const [price, setPrice] = useState(p?.price ?? '');
+  const [price, setPrice] = useState('');
 
-  if (!p) return <ProductPicker onPick={(x) => { setPid(x.id); setPrice(x.price ?? ''); const k = sortedSizes(x); if (k.length === 1) setSize(k[0]); }} onClose={onClose} />;
+  function pickVariant(v) {
+    setSize(v);
+    setPrice(defaultSalePrice(p, v, s.lotsFor(p.id, v)) ?? '');
+  }
 
-  const keys = sortedSizes(p);
+  if (!p) return <ProductPicker onPick={(x) => { setPid(x.id); const k = sortedSizes(x); if (k.length === 1) { setSize(k[0]); setPrice(defaultSalePrice(x, k[0], s.lotsFor(x.id, k[0])) ?? ''); } }} onClose={onClose} />;
+
   function add() {
-    if (!size) return alert('Choose a size.');
+    if (!size) return alert('Choose a colour and size.');
     if (!(Number(qty) > 0)) return alert('Enter a quantity.');
-    if (price === '' || !(Number(price) >= 0)) return alert('Enter the selling price.');
     onAdd({
       productId: p.id,
       productName: p.name,
       categoryId: p.categoryId || '',
       size,
       qty: Number(qty),
-      price: Number(price),
-      cost: p.cost ?? null,
+      price: num(price),
     });
   }
 
   return (
     <Modal title={p.name} onClose={onClose}>
-      <h3 className="section">Size</h3>
-      <div className="size-grid">
-        {keys.map((k) => {
-          const q = Number(p.sizes[k]) || 0;
-          return (
-            <button key={k} className={`size-cell pick ${size === k ? 'on' : ''} ${q <= 0 ? 'zero' : ''}`} onClick={() => setSize(k)}>
-              <div className="size-cell-label">{sizeLabel(k, p)}</div>
-              <div className="size-cell-qty small">{q} left</div>
-            </button>
-          );
-        })}
-      </div>
+      <h3 className="section">Colour & size</h3>
+      <VariantGrid p={p} onPick={pickVariant} selected={size} />
       <div className="two">
         <Field label="Quantity"><input inputMode="numeric" type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
-        <Field label="Price each (GH₵)" hint={p.price == null ? 'No price saved for this product' : ''}>
-          <input inputMode="decimal" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} />
+        <Field label="Price each (GH₵)" hint="Optional. Leave blank to add it later.">
+          <input inputMode="decimal" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price missing" />
         </Field>
       </div>
       <button className="btn primary block" onClick={add}>Add to sale</button>
@@ -266,16 +290,17 @@ function CustomerPicker({ onPick, onClose }) {
 }
 
 /* ---------- Sales list ---------- */
-export function SalesList() {
+export function SalesList({ pushed, initialFilter }) {
   const s = useStore();
   const nav = useNav();
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState(initialFilter || 'all');
   const [q, setQ] = useState('');
-  if (s.loading) return (<><Header title="Sales" back={false} /><Loading /></>);
+  if (s.loading) return (<><Header title="Sales" back={!!pushed} /><Loading /></>);
 
   let list = s.sales;
   if (filter === 'deliveries') list = list.filter((x) => x.delivery && !['Delivered', 'Cancelled'].includes(x.delivery.status));
   if (filter === 'allDeliveries') list = list.filter((x) => x.delivery);
+  if (filter === 'missing') list = list.filter((x) => x.priceMissing);
   if (q) list = list.filter((x) => matches(x.customerName, q) || x.items.some((it) => matches(it.productName, q)) || matches(x.delivery?.address, q));
 
   const groups = [];
@@ -289,13 +314,14 @@ export function SalesList() {
 
   return (
     <>
-      <Header title="Sales" back={false} right={<button className="icon-btn" onClick={() => nav.goTab('sell')} aria-label="New sale"><Icon name="plus" /></button>} />
+      <Header title="Sales" back={!!pushed} right={<button className="icon-btn" onClick={() => nav.goTab('sell')} aria-label="New sale"><Icon name="plus" /></button>} />
       <Page>
         <SearchBox value={q} onChange={setQ} placeholder="Search customer, product, address" />
         <Chips value={filter} onChange={setFilter} options={[
           { value: 'all', label: 'All sales' },
           { value: 'deliveries', label: 'Deliveries to do' },
           { value: 'allDeliveries', label: 'All deliveries' },
+          { value: 'missing', label: 'Price missing' },
         ]} />
         {groups.map((g) => (
           <div key={g.day}>
@@ -328,7 +354,7 @@ export function SaleDetail({ id }) {
       `${fmtDate(sale.date)} ${fmtTime(sale.date)}`,
       sale.customerName ? `Customer: ${sale.customerName}` : '',
       '',
-      ...sale.items.map((it) => `${it.productName} (size ${sizeLabel(it.size, s.productById[it.productId])}) ${it.qty} x ${money(it.price)} = ${money(it.qty * it.price)}`),
+      ...sale.items.map((it) => `${it.productName} (${sizeLabel(it.size, s.productById[it.productId])}) ${it.qty} x ${it.price == null ? 'price to be confirmed' : `${money(it.price)} = ${money(it.qty * it.price)}`}`),
       '',
       `Total: ${money(sale.total)}`,
       `Paid by: ${sale.paymentMethod}`,
@@ -361,12 +387,13 @@ export function SaleDetail({ id }) {
             <button className="row" key={i} onClick={() => s.productById[it.productId] && nav.push('product', { id: it.productId })}>
               <div className="row-main">
                 <div className="row-title">{it.productName}</div>
-                <div className="row-sub">Size {sizeLabel(it.size, s.productById[it.productId])} · {it.qty} × {money(it.price)}</div>
+                <div className="row-sub">{sizeLabel(it.size, s.productById[it.productId])} · {it.qty} × {moneyOr(it.price, 'price missing')}</div>
               </div>
-              <div className="row-end">{money(it.qty * it.price)}</div>
+              <div className="row-end">{it.price == null ? <span className="pill out">Add price</span> : money(it.qty * it.price)}</div>
             </button>
           ))}
         </div>
+        {sale.items.some((it) => it.price == null) && <MissingPrices sale={sale} />}
         <div className="total-line"><span>Total</span><b>{money(sale.total)}</b></div>
 
         <h3 className="section">Delivery</h3>
@@ -403,11 +430,35 @@ export function SaleDetail({ id }) {
 
         <button className="btn danger block" onClick={() => {
           if (confirm('Cancel this sale? It will be deleted and the items put back into stock.')) {
-            voidSale(sale, s.productById);
+            voidSale(sale, s.productById, s.lotById);
             nav.pop();
           }
         }}>Cancel sale and return items to stock</button>
       </Page>
     </>
+  );
+}
+
+function MissingPrices({ sale }) {
+  const s = useStore();
+  const [vals, setVals] = useState({});
+  return (
+    <div className="card warn-card">
+      <strong>Add missing prices</strong>
+      {sale.items.map((it, i) =>
+        it.price == null ? (
+          <div className="qty-row" key={i}>
+            <span>{it.productName} · {sizeLabel(it.size, s.productById[it.productId])} × {it.qty}</span>
+            <input inputMode="decimal" type="number" step="0.01" placeholder="Price each" value={vals[i] ?? ''} onChange={(e) => setVals({ ...vals, [i]: e.target.value })} />
+            <span />
+          </div>
+        ) : null
+      )}
+      <button className="btn primary" onClick={() => {
+        const items = sale.items.map((it, i) => (it.price == null && num(vals[i]) != null ? { ...it, price: num(vals[i]) } : it));
+        updateSale(sale.id, { items, total: saleTotal(items), priceMissing: items.some((it) => it.price == null) });
+        setVals({});
+      }}>Save prices</button>
+    </div>
   );
 }

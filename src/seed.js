@@ -1,4 +1,4 @@
-// Stock taken on 26 October 2026 (from the handwritten list). Prices were not on the list.
+// Bought from Teemah on 24 October 2026; stock taken on 26 October 2026 (handwritten list). Prices were not on the list.
 import { MIXED } from './util.js';
 
 const categories = [
@@ -71,7 +71,9 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
 
 export const seed = {
   date: new Date(2026, 9, 26, 12).getTime(),
-  note: 'Stock taken 26 Oct 2026',
+  purchaseDate: new Date(2026, 9, 24, 12).getTime(),
+  supplier: 'Teemah',
+  note: 'Bought 24 Oct 2026, stock taken 26 Oct 2026',
   categories,
   products: rows.map(([categoryId, name, sizes, mixedNote]) => ({
     id: `seed-${categoryId}-${slug(name)}`,

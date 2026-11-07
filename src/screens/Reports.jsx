@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { subscribeMovements, useStore } from '../store.jsx';
+import React, { useMemo, useState } from 'react';
+import { itemCost, useStore } from '../store.jsx';
 import { Chips, Field, Header, Loading, Page, Stat } from '../ui.jsx';
+import { deliveryGoods } from './Deliveries.jsx';
 import {
+  defaultSalePrice,
   downloadFile,
   endOfDay,
   fmtDate,
@@ -11,10 +13,13 @@ import {
   money,
   productAlerts,
   sizeLabel,
+  sortedVariants,
   startOfDay,
+  sum,
   toCSV,
   toInputDate,
   totalStock,
+  variantCost,
 } from '../util.js';
 
 const DAY = 86400000;
@@ -25,10 +30,7 @@ function presetRange(preset) {
   switch (preset) {
     case 'today': return [today, endOfDay(today)];
     case 'yesterday': return [today - DAY, today - 1];
-    case 'week': {
-      const dow = (d.getDay() + 6) % 7; // Monday start
-      return [today - dow * DAY, endOfDay(today)];
-    }
+    case 'week': return [today - ((d.getDay() + 6) % 7) * DAY, endOfDay(today)];
     case 'month': return [new Date(d.getFullYear(), d.getMonth(), 1).getTime(), endOfDay(today)];
     case 'lastMonth': return [new Date(d.getFullYear(), d.getMonth() - 1, 1).getTime(), new Date(d.getFullYear(), d.getMonth(), 1).getTime() - 1];
     case 'year': return [new Date(d.getFullYear(), 0, 1).getTime(), endOfDay(today)];
@@ -37,92 +39,125 @@ function presetRange(preset) {
 }
 
 function addTo(map, key, fields) {
-  const x = (map[key] = map[key] || { key, qty: 0, revenue: 0, count: 0 });
+  const x = (map[key] = map[key] || { key, qty: 0, revenue: 0, count: 0, cost: 0, amount: 0 });
   for (const [k, v] of Object.entries(fields)) x[k] = (x[k] || 0) + v;
   return x;
 }
+const sortBy = (m, k) => Object.values(m).sort((a, b) => b[k] - a[k]);
 
 export default function Reports() {
   const s = useStore();
   const [preset, setPreset] = useState('month');
   const [from, setFrom] = useState(toInputDate(Date.now() - 6 * DAY));
   const [to, setTo] = useState(toInputDate(Date.now()));
-  const [moves, setMoves] = useState(null);
   const [start, end] = preset === 'custom' ? [fromInputDate(from), endOfDay(fromInputDate(to))] : presetRange(preset);
-  useEffect(() => subscribeMovements(setMoves, { since: start }), [start]);
 
   const r = useMemo(() => {
     if (s.loading) return null;
-    const sales = s.sales.filter((x) => x.date >= start && x.date <= end);
-    const out = {
-      sales,
-      count: sales.length,
-      revenue: 0,
-      units: 0,
-      cost: 0,
-      costedRevenue: 0,
-      uncosted: 0,
-      byPayment: {},
-      byCategory: {},
-      byProduct: {},
-      byDay: {},
-      byCustomer: {},
-      byDelivery: {},
-      bySize: {},
+    const inRange = (x) => x.date >= start && x.date <= end;
+    const sales = s.sales.filter(inRange);
+    const o = {
+      sales, count: sales.length, revenue: 0, units: 0, cogs: 0, costedRevenue: 0, unknownCostQty: 0, missingPrice: 0,
+      byPayment: {}, byCategory: {}, byProduct: {}, byDay: {}, byCustomer: {}, byDelivery: {}, bySize: {}, bySupplier: {},
     };
     for (const sale of sales) {
-      out.revenue += sale.total || 0;
-      addTo(out.byPayment, sale.paymentMethod || 'Other', { revenue: sale.total || 0, count: 1 });
-      addTo(out.byDay, startOfDay(sale.date), { revenue: sale.total || 0, count: 1 });
-      if (sale.customerId) addTo(out.byCustomer, sale.customerName, { revenue: sale.total || 0, count: 1 });
-      if (sale.delivery) addTo(out.byDelivery, sale.delivery.status, { count: 1 });
+      o.revenue += sale.total || 0;
+      addTo(o.byPayment, sale.paymentMethod || 'Other', { revenue: sale.total || 0, count: 1 });
+      addTo(o.byDay, startOfDay(sale.date), { revenue: sale.total || 0, count: 1 });
+      if (sale.customerId) addTo(o.byCustomer, sale.customerName, { revenue: sale.total || 0, count: 1 });
+      if (sale.delivery) addTo(o.byDelivery, sale.delivery.status, { count: 1 });
       for (const it of sale.items) {
-        const line = it.qty * it.price;
-        out.units += it.qty;
-        const cost = it.cost ?? s.productById[it.productId]?.cost ?? null;
-        if (cost != null) {
-          out.cost += cost * it.qty;
-          out.costedRevenue += line;
-        } else out.uncosted += it.qty;
-        addTo(out.byCategory, s.catName[it.categoryId || s.productById[it.productId]?.categoryId] || 'No category', { qty: it.qty, revenue: line });
-        addTo(out.byProduct, it.productName, { qty: it.qty, revenue: line });
-        addTo(out.bySize, it.size, { qty: it.qty });
+        const line = it.price == null ? 0 : it.qty * it.price;
+        if (it.price == null) o.missingPrice += it.qty;
+        o.units += it.qty;
+        if (it.price != null) {
+          // Items without a price yet are left out of profit until the price is added.
+          const { cost, unknownQty } = itemCost(it, s);
+          o.unknownCostQty += unknownQty;
+          o.cogs += cost;
+          o.costedRevenue += line * ((it.qty - unknownQty) / it.qty);
+        }
+        const cat = s.catName[it.categoryId || s.productById[it.productId]?.categoryId] || 'No category';
+        addTo(o.byCategory, cat, { qty: it.qty, revenue: line });
+        addTo(o.byProduct, it.productName, { qty: it.qty, revenue: line });
+        addTo(o.bySize, sizeLabel(it.size, s.productById[it.productId]), { qty: it.qty });
       }
     }
-    const sort = (m, k = 'revenue') => Object.values(m).sort((a, b) => b[k] - a[k]);
-    out.payment = sort(out.byPayment);
-    out.category = sort(out.byCategory);
-    out.product = sort(out.byProduct, 'qty');
-    out.customer = sort(out.byCustomer).slice(0, 10);
-    out.delivery = sort(out.byDelivery, 'count');
-    out.size = sort(out.bySize, 'qty');
-    out.day = Object.values(out.byDay).sort((a, b) => b.key - a.key);
-    out.profit = out.costedRevenue - out.cost;
+    o.gross = o.costedRevenue - o.cogs;
 
-    const ms = (moves || []).filter((m) => m.date >= start && m.date <= end);
-    out.received = ms.filter((m) => m.reason === 'Received').reduce((a, m) => a + m.change, 0);
-    out.countAdj = ms.filter((m) => m.reason === 'Stock count').reduce((a, m) => a + m.change, 0);
+    // Expenses: shop expenses + delivery other costs marked "expense", dated in the period.
+    const expenses = s.expenses.filter(inRange);
+    const deliveries = s.deliveries.filter(inRange);
+    o.shopExpenses = sum(expenses, (e) => e.amount);
+    o.deliveryExpenses = sum(deliveries, (d) => sum((d.otherCosts || []).filter((c) => c.mode === 'expense'), (c) => c.amount));
+    o.expensesTotal = o.shopExpenses + o.deliveryExpenses;
+    o.net = o.gross - o.expensesTotal;
+    o.expenseRows = [
+      ...expenses.map((e) => [fmtDate(e.date), e.description, money(e.amount)]),
+      ...deliveries.flatMap((d) => (d.otherCosts || []).filter((c) => c.mode === 'expense').map((c) => [fmtDate(d.date), `${c.label} (${d.supplier || 'delivery'})`, money(c.amount)])),
+    ];
 
-    // Current stock snapshot
-    out.stockUnits = s.products.reduce((a, p) => a + totalStock(p), 0);
-    out.stockAtPrice = s.products.reduce((a, p) => a + (p.price != null ? p.price * Math.max(0, totalStock(p)) : 0), 0);
-    out.stockAtCost = s.products.reduce((a, p) => a + (p.cost != null ? p.cost * Math.max(0, totalStock(p)) : 0), 0);
-    out.unpriced = s.products.filter((p) => p.price == null).length;
-    out.lowCount = s.products.filter((p) => productAlerts(p, s.settings).length).length;
-    return out;
-  }, [s, start, end, moves]);
+    // Purchases in the period
+    for (const d of deliveries) {
+      addTo(o.bySupplier, d.supplier || 'No supplier', {
+        count: 1,
+        qty: sum(d.items, (i) => i.qty),
+        cost: deliveryGoods(d),
+        amount: sum(d.otherCosts || [], (c) => c.amount),
+      });
+    }
+    o.purchases = sum(deliveries, (d) => deliveryGoods(d) + sum(d.otherCosts || [], (c) => c.amount));
+    o.purchasedPieces = sum(deliveries, (d) => sum(d.items, (i) => i.qty));
+
+    // Stock now
+    o.stockUnits = s.products.reduce((a, p) => a + totalStock(p), 0);
+    o.stockAtPrice = 0;
+    o.stockAtCost = 0;
+    o.unpricedPieces = 0;
+    for (const p of s.products) {
+      for (const v of sortedVariants(p)) {
+        const q = Math.max(0, Number(p.sizes[v]) || 0);
+        if (!q) continue;
+        const lots = s.lotsFor(p.id, v);
+        const price = defaultSalePrice(p, v, lots);
+        if (price != null) o.stockAtPrice += price * q;
+        else o.unpricedPieces += q;
+        let left = q;
+        for (const l of lots) {
+          const take = Math.min(left, Math.max(0, l.remaining));
+          const c = l.unitCost ?? variantCost(p, v);
+          if (c != null) o.stockAtCost += c * take;
+          left -= take;
+        }
+        const c = variantCost(p, v);
+        if (left > 0 && c != null) o.stockAtCost += c * left;
+      }
+    }
+    o.lowCount = s.products.filter((p) => productAlerts(p, s.settings).length).length;
+
+    o.payment = sortBy(o.byPayment, 'revenue');
+    o.category = sortBy(o.byCategory, 'revenue');
+    o.product = sortBy(o.byProduct, 'qty');
+    o.customer = sortBy(o.byCustomer, 'revenue').slice(0, 10);
+    o.deliveryStatus = sortBy(o.byDelivery, 'count');
+    o.size = sortBy(o.bySize, 'qty');
+    o.supplier = sortBy(o.bySupplier, 'cost');
+    o.day = Object.values(o.byDay).sort((a, b) => b.key - a.key);
+    return o;
+  }, [s, start, end]);
 
   if (!r) return (<><Header title="Reports" /><Loading /></>);
 
-  const rangeLabel = `${fmtDate(start)} to ${fmtDate(end)}`;
-
   function exportSales() {
-    const rows = [['Date', 'Time', 'Customer', 'Phone', 'Product', 'Category', 'Size', 'Qty', 'Price', 'Line total', 'Payment', 'Delivery name', 'Delivery address', 'Delivery status', 'Note', 'Recorded by']];
+    const rows = [['Date', 'Time', 'Customer', 'Phone', 'Product', 'Category', 'Colour / size', 'Qty', 'Price', 'Line total', 'Cost', 'Profit', 'Payment', 'Delivery name', 'Delivery address', 'Delivery status', 'Note', 'Recorded by']];
     for (const sale of [...r.sales].reverse()) {
       for (const it of sale.items) {
+        const { cost, unknownQty } = itemCost(it, s);
+        const line = it.price == null ? '' : it.qty * it.price;
         rows.push([
           fmtDate(sale.date), fmtTime(sale.date), sale.customerName || 'Walk-in', sale.customerPhone || '',
-          it.productName, s.catName[it.categoryId] || '', sizeLabel(it.size, s.productById[it.productId]), it.qty, it.price, it.qty * it.price,
+          it.productName, s.catName[it.categoryId] || '', sizeLabel(it.size, s.productById[it.productId]), it.qty, it.price ?? 'missing', line,
+          unknownQty ? '' : cost, unknownQty || line === '' ? '' : line - cost,
           sale.paymentMethod, sale.delivery?.name || '', sale.delivery?.address || '', sale.delivery?.status || '', sale.note || '', sale.by || '',
         ]);
       }
@@ -131,12 +166,22 @@ export default function Reports() {
   }
 
   function exportStock() {
-    const rows = [['Category', 'Product', 'Size', 'Qty', 'Selling price', 'Cost price']];
+    const rows = [['Category', 'Product', 'Colour / size', 'Qty', 'Selling price', 'Supplier', 'Bought', 'Qty left from delivery', 'Unit cost']];
     for (const p of s.products) {
-      for (const [k, q] of Object.entries(p.sizes || {})) rows.push([s.catName[p.categoryId] || '', p.name, sizeLabel(k, p), q, p.price ?? '', p.cost ?? '']);
+      for (const v of sortedVariants(p)) {
+        const lots = s.lotsFor(p.id, v).filter((l) => l.remaining > 0);
+        const price = defaultSalePrice(p, v, lots);
+        if (!lots.length) rows.push([s.catName[p.categoryId] || '', p.name, sizeLabel(v, p), p.sizes[v], price ?? '', '', '', '', variantCost(p, v) ?? '']);
+        lots.forEach((l, i) => rows.push([s.catName[p.categoryId] || '', p.name, sizeLabel(v, p), i === 0 ? p.sizes[v] : '', price ?? '', l.supplier, fmtDate(l.date), l.remaining, l.unitCost ?? '']));
+      }
     }
     downloadFile(`stock_${toInputDate(Date.now())}.csv`, toCSV(rows), 'text/csv');
   }
+
+  const warn = [
+    r.unknownCostQty ? `${r.unknownCostQty} item${r.unknownCostQty === 1 ? '' : 's'} sold have no cost price, so they are left out of profit. Add costs on the delivery.` : '',
+    r.missingPrice ? `${r.missingPrice} item${r.missingPrice === 1 ? '' : 's'} sold have no price yet, so they are left out of sales and profit. Add the price on the sale.` : '',
+  ].filter(Boolean);
 
   return (
     <>
@@ -161,28 +206,45 @@ export default function Reports() {
         </div>
 
         <div className="print-only print-title">Adwoaba's Lounge report</div>
-        <p className="range">{rangeLabel}</p>
+        <p className="range">{fmtDate(start)} to {fmtDate(end)}</p>
 
         <div className="stats">
-          <Stat label="Sales" value={money(r.revenue)} sub={`${r.count} sale${r.count === 1 ? '' : 's'}`} />
-          <Stat label="Items sold" value={r.units} sub={r.count ? `Average sale ${money(r.revenue / r.count)}` : ''} />
-          <Stat label="Gross profit" value={money(r.profit)} sub={r.uncosted ? `${r.uncosted} item${r.uncosted === 1 ? '' : 's'} had no cost price, not included` : 'Sales minus cost price'} />
-          <Stat label="Stock received" value={r.received} sub={r.countAdj ? `Count corrections: ${r.countAdj > 0 ? '+' : ''}${r.countAdj}` : 'Pieces added in period'} />
+          <Stat label="Sales" value={money(r.revenue)} sub={`${r.count} sale${r.count === 1 ? '' : 's'} · ${r.units} items`} />
+          <Stat label="Gross profit" value={money(r.gross)} sub="Sales minus cost of items sold" />
+          <Stat label="Expenses" value={money(r.expensesTotal)} sub={`Shop ${money(r.shopExpenses)} · Delivery ${money(r.deliveryExpenses)}`} />
+          <Stat label="Net profit" value={money(r.net)} sub="Gross profit minus expenses" tone={r.net < 0 ? 'neg' : ''} />
+        </div>
+        {warn.map((w) => <p key={w} className="warn-text small">{w}</p>)}
+
+        <div className="card">
+          <div className="kv"><span>Sales</span><b>{money(r.revenue)}</b></div>
+          {r.costedRevenue !== r.revenue && <div className="kv"><span>Sales with known cost</span><b>{money(r.costedRevenue)}</b></div>}
+          <div className="kv"><span>Cost of items sold</span><b>− {money(r.cogs)}</b></div>
+          <div className="kv total"><span>Gross profit</span><b>{money(r.gross)}</b></div>
+          <div className="kv"><span>Expenses</span><b>− {money(r.expensesTotal)}</b></div>
+          <div className="kv total"><span>Net profit</span><b>{money(r.net)}</b></div>
         </div>
 
         <Table title="By category" cols={['Category', 'Qty', 'Sales']} rows={r.category.map((x) => [x.key, x.qty, money(x.revenue)])} />
         <Table title="By payment method" cols={['Method', 'Sales', 'Amount']} rows={r.payment.map((x) => [x.key, x.count, money(x.revenue)])} />
         <Table title="Products sold" cols={['Product', 'Qty', 'Sales']} rows={r.product.map((x) => [x.key, x.qty, money(x.revenue)])} />
-        <Table title="Sizes sold" cols={['Size', 'Qty']} rows={r.size.map((x) => [sizeLabel(x.key), x.qty])} />
+        <Table title="Colours & sizes sold" cols={['Colour / size', 'Qty']} rows={r.size.map((x) => [x.key, x.qty])} />
         <Table title="By day" cols={['Day', 'Sales', 'Amount']} rows={r.day.map((x) => [fmtDay(x.key), x.count, money(x.revenue)])} />
         <Table title="Top customers" cols={['Customer', 'Purchases', 'Spent']} rows={r.customer.map((x) => [x.key, x.count, money(x.revenue)])} />
-        <Table title="Deliveries" cols={['Status', 'Count']} rows={r.delivery.map((x) => [x.key, x.count])} />
+        <Table title="Deliveries to customers" cols={['Status', 'Count']} rows={r.deliveryStatus.map((x) => [x.key, x.count])} />
+        <Table title="Expenses" cols={['Date', 'What for', 'Amount']} rows={r.expenseRows} />
+
+        <h3 className="section">Stock bought</h3>
+        <div className="stats">
+          <Stat label="Spent on stock" value={money(r.purchases)} sub={`${r.purchasedPieces} pieces, incl. other costs`} />
+        </div>
+        <Table title="By supplier" cols={['Supplier', 'Pieces', 'Goods', 'Other']} rows={r.supplier.map((x) => [x.key, x.qty, money(x.cost), money(x.amount)])} />
 
         <h3 className="section">Stock now</h3>
         <div className="stats">
           <Stat label="In stock" value={r.stockUnits} sub={`${r.lowCount} product${r.lowCount === 1 ? '' : 's'} low`} />
-          <Stat label="Stock value" value={money(r.stockAtPrice)} sub={r.unpriced ? `At selling price. ${r.unpriced} products have no price.` : 'At selling price'} />
-          <Stat label="Stock cost" value={money(r.stockAtCost)} sub="At cost price, where set" />
+          <Stat label="Value at selling price" value={money(r.stockAtPrice)} sub={r.unpricedPieces ? `${r.unpricedPieces} pieces have no price` : ''} />
+          <Stat label="Value at cost" value={money(r.stockAtCost)} sub="Where cost is known" />
         </div>
 
         <div className="row-actions no-print">

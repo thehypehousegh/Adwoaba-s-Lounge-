@@ -4,7 +4,8 @@ import { auth, configured } from './firebase.js';
 import { StoreProvider, useStore } from './store.jsx';
 import { Icon, LOGO, NavCtx } from './ui.jsx';
 import Home from './screens/Home.jsx';
-import { StockList, ProductDetail, ProductForm, ReceiveStock, StockCount, StockHistory } from './screens/Stock.jsx';
+import { StockList, ProductDetail, ProductForm, PriceEditor, RemoveStock, StockCount, StockHistory } from './screens/Stock.jsx';
+import { ReceiveStock, DeliveriesList, DeliveryDetail, Expenses } from './screens/Deliveries.jsx';
 import { NewSale, SalesList, SaleDetail } from './screens/Sales.jsx';
 import { CustomerList, CustomerDetail, CustomerForm } from './screens/Customers.jsx';
 import Reports from './screens/Reports.jsx';
@@ -23,6 +24,13 @@ const SCREENS = {
   product: ProductDetail,
   productForm: ProductForm,
   receive: ReceiveStock,
+  prices: PriceEditor,
+  remove: RemoveStock,
+  deliveries: DeliveriesList,
+  delivery: DeliveryDetail,
+  expenses: Expenses,
+  stock: StockList,
+  sales: SalesList,
   count: StockCount,
   history: StockHistory,
   newSale: NewSale,

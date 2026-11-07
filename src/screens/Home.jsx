@@ -14,7 +14,23 @@ export default function Home() {
   const todayTotal = todaySales.reduce((a, x) => a + (x.total || 0), 0);
   const units = s.products.reduce((a, p) => a + totalStock(p), 0);
   const pendingDeliveries = s.sales.filter((x) => x.delivery && !['Delivered', 'Cancelled'].includes(x.delivery.status)).length;
+  const missingPrices = s.sales.filter((x) => x.priceMissing).length;
   const outCount = s.alerts.filter((a) => a.alerts.some((x) => x.level === 'out')).length;
+
+  const tiles = [
+    { icon: 'plus', label: 'New sale', go: () => nav.goTab('sell'), primary: true },
+    { icon: 'inbox', label: 'New stock', sub: 'Receive a delivery', go: () => nav.push('receive'), primary: true },
+    { icon: 'box', label: 'View stock', go: () => nav.goTab('stock') },
+    { icon: 'search', label: 'Search products', go: () => nav.push('stock', { pushed: true, focusSearch: true }) },
+    { icon: 'receipt', label: 'Sales history', go: () => nav.goTab('sales') },
+    { icon: 'tag', label: 'Add product', go: () => nav.push('productForm') },
+    { icon: 'clipboard', label: 'Take stock', go: () => nav.push('count') },
+    { icon: 'bell', label: 'Low stock', badge: s.alerts.length || null, go: () => nav.push('alerts') },
+    { icon: 'users', label: 'Customers', go: () => nav.push('customers') },
+    { icon: 'truck', label: 'Deliveries & suppliers', go: () => nav.push('deliveries') },
+    { icon: 'history', label: 'Expenses', go: () => nav.push('expenses') },
+    { icon: 'chart', label: 'Reports & profit', go: () => nav.push('reports') },
+  ];
 
   return (
     <>
@@ -22,14 +38,20 @@ export default function Home() {
       <Page>
         <div className="stats">
           <Stat label="Sales today" value={money(todayTotal)} sub={`${todaySales.length} sale${todaySales.length === 1 ? '' : 's'}`} />
-          <Stat label="Pairs & items in stock" value={units} sub={`${s.products.length} products`} />
+          <Stat label="In stock" value={units} sub={`${s.products.length} products`} />
         </div>
 
-        <div className="actions">
-          <button className="action primary" onClick={() => nav.goTab('sell')}><Icon name="plus" />New sale</button>
-          <button className="action" onClick={() => nav.push('receive')}><Icon name="inbox" />Receive stock</button>
-          <button className="action" onClick={() => nav.push('count')}><Icon name="clipboard" />Take stock</button>
-          <button className="action" onClick={() => nav.push('reports')}><Icon name="chart" />Reports</button>
+        <div className="tiles">
+          {tiles.map((t) => (
+            <button key={t.label} className={`tile ${t.primary ? 'primary' : ''}`} onClick={t.go}>
+              <span className="tile-icon">
+                <Icon name={t.icon} size={26} />
+                {t.badge && <span className="tile-badge">{t.badge}</span>}
+              </span>
+              <span className="tile-label">{t.label}</span>
+              {t.sub && <span className="tile-sub">{t.sub}</span>}
+            </button>
+          ))}
         </div>
 
         {s.alerts.length > 0 && (
@@ -41,13 +63,21 @@ export default function Home() {
             </div>
           </Card>
         )}
-
         {pendingDeliveries > 0 && (
-          <Card onClick={() => nav.goTab('sales')} className="info-card">
+          <Card onClick={() => nav.push('sales', { pushed: true, initialFilter: 'deliveries' })} className="info-card">
             <Icon name="truck" />
             <div>
-              <strong>{pendingDeliveries} deliver{pendingDeliveries === 1 ? 'y' : 'ies'} not yet delivered</strong>
-              <div className="row-sub">Tap Sales, then filter by deliveries.</div>
+              <strong>{pendingDeliveries} customer deliver{pendingDeliveries === 1 ? 'y' : 'ies'} not yet delivered</strong>
+              <div className="row-sub">Tap to see them.</div>
+            </div>
+          </Card>
+        )}
+        {missingPrices > 0 && (
+          <Card onClick={() => nav.push('sales', { pushed: true, initialFilter: 'missing' })} className="info-card">
+            <Icon name="tag" />
+            <div>
+              <strong>{missingPrices} sale{missingPrices === 1 ? '' : 's'} with a missing price</strong>
+              <div className="row-sub">Tap to add the prices.</div>
             </div>
           </Card>
         )}
@@ -55,9 +85,7 @@ export default function Home() {
         <h3 className="section">Today's sales</h3>
         {todaySales.length === 0 && <p className="muted">No sales yet today.</p>}
         <div className="list">
-          {todaySales.slice(0, 10).map((sale) => (
-            <SaleRow key={sale.id} sale={sale} sub={fmtTime(sale.date)} />
-          ))}
+          {todaySales.slice(0, 10).map((sale) => <SaleRow key={sale.id} sale={sale} sub={fmtTime(sale.date)} />)}
         </div>
       </Page>
     </>

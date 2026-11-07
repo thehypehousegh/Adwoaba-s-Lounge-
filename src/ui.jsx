@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState } from 'react';
 import { useStore } from './store.jsx';
-import { matches, totalStock } from './util.js';
+import { coloursOf, searchProduct, totalStock } from './util.js';
 
 export const NavCtx = createContext(null);
 export const useNav = () => useContext(NavCtx);
@@ -111,11 +111,11 @@ export function CategoryChips({ value, onChange }) {
   );
 }
 
-export function SearchBox({ value, onChange, placeholder = 'Search' }) {
+export function SearchBox({ value, onChange, placeholder = 'Search', autoFocus }) {
   return (
     <div className="search">
       <Icon name="search" size={18} />
-      <input type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
+      <input type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus} />
     </div>
   );
 }
@@ -136,21 +136,22 @@ export function Modal({ title, onClose, children }) {
   );
 }
 
-export function ProductPicker({ onPick, onClose }) {
+export function ProductPicker({ onPick, onClose, extra }) {
   const { products, catName } = useStore();
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('');
-  const list = (products || []).filter((p) => (!cat || p.categoryId === cat) && matches(p.name, q));
+  const list = (products || []).filter((p) => (!cat || p.categoryId === cat) && searchProduct(p, catName[p.categoryId], q));
   return (
     <Modal title="Choose product" onClose={onClose}>
-      <SearchBox value={q} onChange={setQ} placeholder="Search products" />
+      {extra}
+      <SearchBox value={q} onChange={setQ} placeholder="Search, e.g. zara black" />
       <CategoryChips value={cat} onChange={setCat} />
       <div className="list">
         {list.map((p) => (
           <button key={p.id} className="row" onClick={() => onPick(p)}>
             <div className="row-main">
               <div className="row-title">{p.name}</div>
-              <div className="row-sub">{catName[p.categoryId] || 'No category'}</div>
+              <div className="row-sub">{catName[p.categoryId] || 'No category'}{coloursOf(p).filter(Boolean).length ? ` · ${coloursOf(p).filter(Boolean).join(', ')}` : ''}</div>
             </div>
             <div className="row-end">{totalStock(p)} in stock</div>
           </button>
