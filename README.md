@@ -45,7 +45,7 @@ Pushing to `main` deploys to GitHub Pages via `.github/workflows/deploy.yml`.
 | Collection | Contents |
 | --- | --- |
 | `categories` | name, order |
-| `products` | name, categoryId, default price/cost, sizeAlert, totalAlert, sizes `{ "Black|38": 3, "38": 2 }`, prices and costs per colour/size |
+| `products` | name, categoryId, default price/cost, sizeAlert, totalAlert, sizes `{ "Black\|38": 3, "38": 2 }`, prices and costs per colour/size |
 | `deliveries` | date, supplier, note, items `[{ productId, variant, qty, cost, price }]`, otherCosts `[{ label, amount, mode: spread or expense }]` |
 | `lots` | one per delivery line: qty, remaining, unitCost (incl. spread costs), price, supplier, date |
 | `expenses` | date, description, amount |
