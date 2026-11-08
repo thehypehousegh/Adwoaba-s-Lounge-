@@ -61,7 +61,7 @@ export function ReceiveStock({ productId, isNew }) {
     if (!items.length) return alert('Add at least one item.');
     if (items.some((it) => conflict(it) && it.updateExisting === undefined)) return alert('Choose what happens to the selling price of stock you already have (marked in orange).');
     if (otherCosts.some((c) => !c.label.trim() || !(c.amount > 0))) return alert('Each other cost needs a description and an amount.');
-    const id = createDelivery({ date: dayToTimestamp(date), supplier: supplier.trim(), note: note.trim(), items, otherCosts }, s.lotsFor);
+    const id = createDelivery({ date: dayToTimestamp(date), supplier: supplier.trim(), note: note.trim(), items, otherCosts }, s.lotsFor, s.productById);
     nav.replace('delivery', { id });
   }
 
@@ -350,6 +350,8 @@ export function DeliveryDetail({ id }) {
           })}
         </div>
 
+        <DeliverySales d={d} lotOf={lotOf} />
+
         {(d.otherCosts || []).length > 0 && (
           <>
             <h3 className="section">Other costs</h3>
@@ -518,6 +520,38 @@ export function Expenses() {
         ))}
         {!months.length && <Empty>No expenses recorded</Empty>}
       </Page>
+    </>
+  );
+}
+
+/** Sales that took pieces from this delivery. */
+function DeliverySales({ d, lotOf }) {
+  const s = useStore();
+  const nav = useNav();
+  const lotIds = new Set(d.items.map((it, i) => lotOf(i, it)?.id).filter(Boolean));
+  const rows = [];
+  for (const sale of s.sales) {
+    for (const it of sale.items) {
+      const q = sum((it.lots || []).filter((r) => lotIds.has(r.lotId)), (r) => r.qty);
+      if (q) rows.push({ sale, it, q });
+    }
+  }
+  const sold = sum(rows, (r) => r.q);
+  return (
+    <>
+      <h3 className="section">Sales from this delivery ({sold} sold)</h3>
+      <div className="list">
+        {rows.map(({ sale, it, q }, i) => (
+          <button key={sale.id + i} className="row" onClick={() => nav.push('sale', { id: sale.id })}>
+            <div className="row-main">
+              <div className="row-title">{it.productName} · {variantLabel(it.size, s.productById[it.productId])} × {q}</div>
+              <div className="row-sub">{fmtDate(sale.date)} · {sale.customerName || 'Walk-in'}</div>
+            </div>
+            <div className="row-end">{it.price == null ? <span className="pill out">No price</span> : money(q * it.price)}</div>
+          </button>
+        ))}
+        {!rows.length && <Empty>Nothing sold from this delivery yet</Empty>}
+      </div>
     </>
   );
 }

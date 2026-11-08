@@ -196,6 +196,18 @@ function productUpdate(bt, productId, { stock = {}, prices = {}, costs = {}, fie
   bt.op((b) => b.update(doc(db, 'products', productId), ...args));
 }
 
+/** Keeps a running stock level per product/size within one save, so each history entry records before and after. */
+function stockTracker(productById) {
+  const cur = {};
+  return (pid, v, change) => {
+    const k = pid + '::' + v;
+    const before = k in cur ? cur[k] : productById?.[pid] ? Number(productById[pid].sizes?.[v]) || 0 : null;
+    if (before == null) return {};
+    cur[k] = before + change;
+    return { before, after: before + change };
+  };
+}
+
 function movement(bt, m) {
   bt.op((b) => b.set(doc(collection(db, 'movements')), { note: '', ...m, date: m.date ?? now(), by: by() }));
 }
@@ -237,9 +249,10 @@ const unitCost = (cost, share) => (cost == null ? null : cost + share);
  * d: { date, supplier, note, items: [{ productId, productName, variant, qty, cost, price, updateExisting }], otherCosts: [{ label, amount, mode }] }
  * updateExisting: true = pieces already in stock also take the new selling price.
  */
-export function createDelivery(d, lotsFor) {
+export function createDelivery(d, lotsFor, productById) {
   const id = newId('deliveries');
   const bt = batcher();
+  const track = stockTracker(productById);
   const share = spreadShare(d.items, d.otherCosts);
   const items = d.items.map(({ updateExisting, ...it }) => it);
   bt.op((b) =>
@@ -286,9 +299,11 @@ export function createDelivery(d, lotsFor) {
       size: it.variant,
       change: it.qty,
       reason: 'Received',
-      note: d.supplier ? `From ${d.supplier}` : '',
+      supplier: d.supplier || '',
+      boughtOn: d.date,
+      unitCost: it.cost,
       deliveryId: id,
-      date: d.date,
+      ...track(it.productId, it.variant, it.qty),
     });
   });
   for (const [pid, pu] of Object.entries(perProduct)) productUpdate(bt, pid, pu);
@@ -330,7 +345,7 @@ export function applyStockCount(entries, note, lotsFor) {
       if (!diff) continue;
       stock[v] = diff;
       changed++;
-      movement(bt, { productId: product.id, productName: product.name, size: v, change: diff, reason: 'Stock count', note });
+      movement(bt, { productId: product.id, productName: product.name, size: v, change: diff, reason: 'Stock count', note, before: Number(product.sizes?.[v]) || 0, after: counted });
       if (diff > 0) {
         // Extra pieces found: record them as their own lot with the cost given (or the usual cost).
         const cost = costs[v] ?? variantCost(product, v);
@@ -382,7 +397,8 @@ export function removeStock(product, changes, reason, note, lotsFor) {
   for (const [v, q] of Object.entries(changes)) {
     if (!(q > 0)) continue;
     stock[v] = -q;
-    movement(bt, { productId: product.id, productName: product.name, size: v, change: -q, reason, note });
+    const before = Number(product.sizes?.[v]) || 0;
+    movement(bt, { productId: product.id, productName: product.name, size: v, change: -q, reason, note, kind: 'removed', before, after: before - q });
     let left = q;
     for (const l of lotsFor(product.id, v)) {
       if (left <= 0) break;
@@ -398,16 +414,28 @@ export function removeStock(product, changes, reason, note, lotsFor) {
 }
 
 /* Sales. Each item already carries `lots: [{lotId, qty}]` (oldest delivery first). */
-export function createSale(sale) {
+export function createSale(sale, productById) {
   const id = newId('sales');
   const bt = batcher();
+  const track = stockTracker(productById);
   bt.op((b) => b.set(doc(db, 'sales', id), { ...sale, by: by(), createdAt: now() }));
   const perProduct = {};
   for (const it of sale.items) {
     perProduct[it.productId] = perProduct[it.productId] || {};
     perProduct[it.productId][it.size] = (perProduct[it.productId][it.size] || 0) - it.qty;
     for (const r of it.lots || []) bt.op((b) => b.update(doc(db, 'lots', r.lotId), { remaining: increment(-r.qty) }));
-    movement(bt, { productId: it.productId, productName: it.productName, size: it.size, change: -it.qty, reason: 'Sold', saleId: id, date: sale.date });
+    movement(bt, {
+      productId: it.productId,
+      productName: it.productName,
+      size: it.size,
+      change: -it.qty,
+      reason: 'Sold',
+      saleId: id,
+      customerName: sale.customerName || '',
+      price: it.price ?? null,
+      date: sale.date,
+      ...track(it.productId, it.size, -it.qty),
+    });
   }
   for (const [pid, stock] of Object.entries(perProduct)) productUpdate(bt, pid, { stock });
   bt.commit();
@@ -421,6 +449,7 @@ export function updateSale(id, fields) {
 /** Deletes the sale and puts the items back into stock (and back into their deliveries). */
 export function voidSale(sale, productById, lotById) {
   const bt = batcher();
+  const track = stockTracker(productById);
   bt.op((b) => b.delete(doc(db, 'sales', sale.id)));
   const perProduct = {};
   for (const it of sale.items) {
@@ -428,7 +457,17 @@ export function voidSale(sale, productById, lotById) {
     perProduct[it.productId] = perProduct[it.productId] || {};
     perProduct[it.productId][it.size] = (perProduct[it.productId][it.size] || 0) + it.qty;
     for (const r of it.lots || []) if (lotById[r.lotId]) bt.op((b) => b.update(doc(db, 'lots', r.lotId), { remaining: increment(r.qty) }));
-    movement(bt, { productId: it.productId, productName: it.productName, size: it.size, change: it.qty, reason: 'Sale cancelled', saleId: sale.id });
+    movement(bt, {
+      productId: it.productId,
+      productName: it.productName,
+      size: it.size,
+      change: it.qty,
+      reason: 'Sale cancelled',
+      saleId: sale.id,
+      customerName: sale.customerName || '',
+      saleDate: sale.date,
+      ...track(it.productId, it.size, it.qty),
+    });
   }
   for (const [pid, stock] of Object.entries(perProduct)) productUpdate(bt, pid, { stock });
   bt.commit();

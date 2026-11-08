@@ -307,3 +307,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pink); bord
 .stat.neg .stat-value { color: var(--bad); }
 .kv.total { border-top: 1px solid var(--line); padding-top: 6px; font-size: 16px; }
 .kv.total b { color: var(--pink-d); }
+
+/* Stock history */
+.move-text { font-size: 14px; color: var(--ink); }
+.move-end { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.move-end .diff { font-size: 18px; }
+.move-stock { font-size: 11px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+.pill.info { background: #e6f0fb; color: #1f5fa8; }

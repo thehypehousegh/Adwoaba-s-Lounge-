@@ -19,6 +19,7 @@ import {
   DEFAULT_TOTAL_ALERT,
   MIXED,
   ONE_SIZE,
+  OPENING_DELIVERY_ID,
   coloursOf,
   defaultSalePrice,
   endOfDay,
@@ -243,7 +244,7 @@ export function ProductDetail({ id, tab: initialTab = 'stock' }) {
   const [tab, setTab] = useState(initialTab);
   const [menu, setMenu] = useState(false);
   const [moves, setMoves] = useState(null);
-  useEffect(() => subscribeMovements((all) => setMoves(all.slice(0, 60)), { productId: id }), [id]);
+  useEffect(() => subscribeMovements((all) => setMoves(all.slice(0, 300)), { productId: id }), [id]);
 
   const p = s.productById[id];
   if (s.loading) return (<><Header title="Product" /><Loading /></>);
@@ -349,7 +350,7 @@ export function ProductDetail({ id, tab: initialTab = 'stock' }) {
           </div>
         )}
 
-        {tab === 'history' && (!moves ? <Loading /> : <MovementList moves={moves} showProduct={false} />)}
+        {tab === 'history' && (!moves ? <Loading /> : <HistoryView moves={moves} showProduct={false} />)}
 
         <button className="btn danger block" onClick={() => {
           if (confirm(`Delete "${p.name}"? Past sales stay in your records.`)) { deleteProduct(id); nav.pop(); }
@@ -658,43 +659,120 @@ export function StockCount({ categoryId = '', productId }) {
 }
 
 /* ---------- Stock history ---------- */
+const MOVE_TYPES = {
+  sale: { label: 'Sale', tone: 'out' },
+  received: { label: 'Stock received', tone: 'ok' },
+  count: { label: 'Quantity update', tone: 'low' },
+  removed: { label: 'Removed', tone: 'muted' },
+  cancelled: { label: 'Sale cancelled', tone: 'info' },
+};
+export function movementType(m) {
+  if (m.reason === 'Sold') return 'sale';
+  if (m.reason === 'Received' || m.reason === 'Opening stock') return 'received';
+  if (m.reason === 'Stock count') return 'count';
+  if (m.reason === 'Sale cancelled') return 'cancelled';
+  return 'removed';
+}
+const TYPE_FILTERS = [
+  ['', 'All'],
+  ['sale', 'Sales'],
+  ['received', 'Stock received'],
+  ['count', 'Quantity updates'],
+  ['removed', 'Removed'],
+  ['cancelled', 'Cancelled sales'],
+];
+
 export function StockHistory() {
+  const s = useStore();
   const [moves, setMoves] = useState(null);
-  const [reason, setReason] = useState('');
+  const [q, setQ] = useState('');
   useEffect(() => subscribeMovements(setMoves), []);
-  const reasons = ['Received', 'Sold', 'Stock count', 'Damaged', 'Returned to supplier', 'Sale cancelled', 'Opening stock'];
-  const list = (moves || []).filter((m) => !reason || m.reason === reason).slice(0, 300);
+  const list = (moves || []).filter((m) => searchProduct({ name: m.productName, sizes: { [m.size]: 1 } }, s.catName?.[s.productById?.[m.productId]?.categoryId], q));
   return (
     <>
       <Header title="Stock history" />
       <Page>
-        <div className="chips">
-          {['', ...reasons].map((r) => (
-            <button key={r} className={`chip ${reason === r ? 'on' : ''}`} onClick={() => setReason(r)}>{r || 'All'}</button>
-          ))}
-        </div>
-        {!moves ? <Loading /> : <MovementList moves={list} showProduct />}
+        <SearchBox value={q} onChange={setQ} placeholder="Search product or colour" />
+        {!moves ? <Loading /> : <HistoryView moves={list} showProduct />}
       </Page>
     </>
   );
 }
 
+/** History with type filters. Used on the Stock history screen and on each product. */
+export function HistoryView({ moves, showProduct }) {
+  const [type, setType] = useState('');
+  const counts = {};
+  moves.forEach((m) => (counts[movementType(m)] = (counts[movementType(m)] || 0) + 1));
+  const list = moves.filter((m) => !type || movementType(m) === type).slice(0, 300);
+  return (
+    <>
+      <div className="chips">
+        {TYPE_FILTERS.filter(([k]) => !k || counts[k]).map(([k, l]) => (
+          <button key={k} className={`chip ${type === k ? 'on' : ''}`} onClick={() => setType(k)}>{l}{k ? ` (${counts[k]})` : ''}</button>
+        ))}
+      </div>
+      <MovementList moves={list} showProduct={showProduct} />
+    </>
+  );
+}
+
+function describe(m, s) {
+  const t = movementType(m);
+  const n = Math.abs(m.change);
+  const sale = m.saleId ? s.sales.find((x) => x.id === m.saleId) : null;
+  const customer = m.customerName || sale?.customerName || '';
+  const delivery = m.deliveryId ? s.deliveries.find((d) => d.id === m.deliveryId) : null;
+  const supplier = m.supplier || delivery?.supplier || (m.note?.startsWith('From ') ? m.note.slice(5) : '');
+  switch (t) {
+    case 'sale':
+      return `Sold ${n} to ${customer || 'walk-in customer'}${m.price != null ? ` at ${money(m.price)} each` : ''}`;
+    case 'received':
+      if (m.reason === 'Opening stock') return `Opening stock: ${n} pieces (${m.note || 'stocktake'})`;
+      return `${n} received${supplier ? ` from ${supplier}` : ''}${m.boughtOn ? `, bought ${fmtDate(m.boughtOn)}` : ''}${m.unitCost != null ? ` at ${money(m.unitCost)} each` : ''}`;
+    case 'count':
+      return m.before != null ? `Counted ${m.after}, app had ${m.before}` : `Count corrected by ${m.change > 0 ? '+' : ''}${m.change}`;
+    case 'cancelled':
+      return `Sale${customer ? ` to ${customer}` : ''}${m.saleDate ? ` on ${fmtDate(m.saleDate)}` : ''} cancelled, ${n} back in stock`;
+    default:
+      return `${n} removed: ${m.reason}`;
+  }
+}
+
 function MovementList({ moves, showProduct }) {
-  const { productById } = useStore();
+  const s = useStore();
+  const nav = useNav();
   if (!moves.length) return <Empty>No stock changes yet</Empty>;
   return (
     <div className="list">
-      {moves.map((m) => (
-        <div className="row static" key={m.id}>
-          <div className="row-main">
-            <div className="row-title">{showProduct ? `${m.productName} · ` : ''}{variantLabel(m.size, productById[m.productId])}</div>
-            <div className="row-sub">
-              {m.reason} · {fmtDate(m.date)} {fmtTime(m.date)}{m.by ? ` · ${m.by}` : ''}{m.note ? ` · ${m.note}` : ''}
+      {moves.map((m) => {
+        const t = movementType(m);
+        const p = s.productById[m.productId];
+        const target = t === 'sale' && s.sales.some((x) => x.id === m.saleId)
+          ? () => nav.push('sale', { id: m.saleId })
+          : m.deliveryId && s.deliveries.some((d) => d.id === m.deliveryId)
+          ? () => nav.push('delivery', { id: m.deliveryId })
+          : t === 'received' && m.reason === 'Opening stock'
+          ? () => nav.push('delivery', { id: OPENING_DELIVERY_ID })
+          : null;
+        const Tag = target ? 'button' : 'div';
+        return (
+          <Tag className={`row ${target ? '' : 'static'}`} key={m.id} onClick={target || undefined}>
+            <div className="row-main">
+              <div className="row-title">
+                <span className={`pill ${MOVE_TYPES[t].tone}`}>{MOVE_TYPES[t].label}</span>
+                {showProduct ? `${m.productName} · ` : ''}{variantLabel(m.size, p)}
+              </div>
+              <div className="move-text">{describe(m, s)}</div>
+              <div className="row-sub">{fmtDate(m.date)} {fmtTime(m.date)}{m.by ? ` · ${m.by}` : ''}{m.note && t !== 'received' ? ` · ${m.note}` : ''}</div>
             </div>
-          </div>
-          <div className={`row-end diff ${m.change > 0 ? 'up' : 'down'}`}>{m.change > 0 ? '+' : ''}{m.change}</div>
-        </div>
-      ))}
+            <div className="row-end move-end">
+              <div className={`diff ${m.change > 0 ? 'up' : 'down'}`}>{m.change > 0 ? '+' : ''}{m.change}</div>
+              {m.before != null && <div className="move-stock">{m.before} → {m.after}</div>}
+            </div>
+          </Tag>
+        );
+      })}
     </div>
   );
 }

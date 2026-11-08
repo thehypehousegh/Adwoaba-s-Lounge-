@@ -127,7 +127,7 @@ export function NewSale({ productId, customerId, pushed }) {
       customerPhone: customer?.phone || '',
       delivery: isDelivery ? { name: delivery.name.trim(), address: delivery.address.trim(), status: delivery.status, updatedAt: Date.now() } : null,
       note: note.trim(),
-    });
+    }, s.productById);
     if (pushed) {
       nav.replace('sale', { id });
     } else {
