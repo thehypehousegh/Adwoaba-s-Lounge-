@@ -8,6 +8,7 @@ import {
   increment,
   onSnapshot,
   query,
+  runTransaction,
   setDoc,
   updateDoc,
   where,
@@ -23,6 +24,9 @@ export const useStore = () => useContext(StoreCtx);
 const docsOf = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 export const lotKey = (productId, variant) => `${productId}::${variant}`;
 export const openingLotId = (productId, variant) => `${OPENING_DELIVERY_ID}-${productId}-${variant}`;
+/** The lot a delivery line created (lines keep their lotId once products are merged). */
+export const deliveryLotId = (delivery, it, i) =>
+  it.lotId || (delivery.id === OPENING_DELIVERY_ID ? openingLotId(it.productId, it.variant) : `${delivery.id}-${i}`);
 
 export function StoreProvider({ children }) {
   const [data, setData] = useState({
@@ -90,6 +94,24 @@ export function StoreProvider({ children }) {
     if (!data.products || !data.settings) return;
     if (data.settings.seeded && !data.settings.openingDelivery) migrateOpeningDelivery(data.products);
   }, [data.products, data.settings]);
+
+  // One-time: merge the two "Black sling" lines from the 26 Oct stocktake (owner asked for it on 8 Nov).
+  useEffect(() => {
+    if (!data.products || !data.settings || data.settings.mergedBlackSling || !online) return;
+    const from = 'seed-zara-black-sling-2';
+    const to = 'seed-zara-black-sling';
+    const has = (pid) => data.products.some((p) => p.id === pid);
+    if (!has(from) || !has(to)) {
+      if (data.settings.seeded && !has(from)) saveSettings({ mergedBlackSling: true });
+      return;
+    }
+    if (mergingNow) return;
+    mergingNow = true;
+    mergeProducts(from, to)
+      .then(() => saveSettings({ mergedBlackSling: true }))
+      .catch((e) => console.error('merge', e))
+      .finally(() => (mergingNow = false));
+  }, [data.products, data.settings, online]);
 
   const value = useMemo(() => {
     const catName = {};
@@ -322,7 +344,7 @@ export function updateDelivery(delivery, changes) {
   const date = changes.date ?? delivery.date;
   const supplier = changes.supplier ?? delivery.supplier;
   items.forEach((it, i) => {
-    const lotId = delivery.id === OPENING_DELIVERY_ID ? openingLotId(it.productId, it.variant) : `${delivery.id}-${i}`;
+    const lotId = deliveryLotId(delivery, it, i);
     bt.op((b) =>
       b.set(
         doc(db, 'lots', lotId),
@@ -471,6 +493,67 @@ export function voidSale(sale, productById, lotById) {
   }
   for (const [pid, stock] of Object.entries(perProduct)) productUpdate(bt, pid, { stock });
   bt.commit();
+}
+
+/* ---------- Merge two products ----------
+ * Stock, prices and costs are combined in one transaction, which only runs online,
+ * so two phones can never both merge. Then sales, deliveries and history are moved
+ * over to the product that is kept (safe to repeat).
+ */
+let mergingNow = false;
+export async function mergeProducts(fromId, toId) {
+  if (fromId === toId) throw new Error('Choose a different product.');
+  const merged = await runTransaction(db, async (tx) => {
+    const fromRef = doc(db, 'products', fromId);
+    const toRef = doc(db, 'products', toId);
+    const f = await tx.get(fromRef);
+    const t = await tx.get(toRef);
+    if (!f.exists() || !t.exists()) return null;
+    const F = f.data();
+    const T = t.data();
+    const sizes = { ...(T.sizes || {}) };
+    for (const [v, q] of Object.entries(F.sizes || {})) sizes[v] = (Number(sizes[v]) || 0) + (Number(q) || 0);
+    tx.update(toRef, {
+      sizes,
+      prices: { ...(F.prices || {}), ...(T.prices || {}) },
+      costs: { ...(F.costs || {}), ...(T.costs || {}) },
+      price: T.price ?? F.price ?? null,
+      cost: T.cost ?? F.cost ?? null,
+      updatedAt: now(),
+    });
+    tx.delete(fromRef);
+    return { fromName: F.name, toName: T.name, pieces: Object.values(F.sizes || {}).reduce((a, b) => a + (Number(b) || 0), 0) };
+  });
+  if (!merged) return false;
+
+  const bt = batcher();
+  const moveTo = { productId: toId, productName: merged.toName };
+  for (const d of docsOf(await getDocs(query(collection(db, 'lots'), where('productId', '==', fromId))))) {
+    bt.op((b) => b.update(doc(db, 'lots', d.id), moveTo));
+  }
+  for (const d of docsOf(await getDocs(query(collection(db, 'movements'), where('productId', '==', fromId))))) {
+    bt.op((b) => b.update(doc(db, 'movements', d.id), { ...moveTo, mergedFrom: merged.fromName }));
+  }
+  for (const sale of docsOf(await getDocs(collection(db, 'sales')))) {
+    if (!sale.items.some((it) => it.productId === fromId)) continue;
+    const items = sale.items.map((it) => (it.productId === fromId ? { ...it, ...moveTo } : it));
+    bt.op((b) => b.update(doc(db, 'sales', sale.id), { items }));
+  }
+  for (const d of docsOf(await getDocs(collection(db, 'deliveries')))) {
+    if (!d.items.some((it) => it.productId === fromId)) continue;
+    const items = d.items.map((it, i) => (it.productId === fromId ? { ...it, ...moveTo, lotId: deliveryLotId(d, it, i) } : it));
+    bt.op((b) => b.update(doc(db, 'deliveries', d.id), { items }));
+  }
+  movement(bt, {
+    productId: toId,
+    productName: merged.toName,
+    size: '',
+    change: 0,
+    reason: 'Merged',
+    note: `"${merged.fromName}" (${merged.pieces} pieces) merged into this product`,
+  });
+  bt.commit();
+  return true;
 }
 
 /* Customers */

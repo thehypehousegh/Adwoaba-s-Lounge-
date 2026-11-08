@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  mergeProducts,
   applyStockCount,
   createProduct,
   deleteProduct,
@@ -13,7 +14,7 @@ import {
   useStore,
 } from '../store.jsx';
 import { seed, seedTotal } from '../seed.js';
-import { CategoryChips, Empty, Field, Header, Icon, Loading, Modal, Page, SearchBox, Stat, useNav } from '../ui.jsx';
+import { CategoryChips, Empty, Field, Header, Icon, Loading, Modal, Page, ProductPicker, SearchBox, Stat, useNav } from '../ui.jsx';
 import {
   DEFAULT_SIZE_ALERT,
   DEFAULT_TOTAL_ALERT,
@@ -272,6 +273,7 @@ export function ProductDetail({ id, tab: initialTab = 'stock' }) {
     ['clipboard', 'Correct count', 'Type what you counted; also cost and selling prices', () => nav.push('count', { productId: id })],
     ['tag', 'Change prices', 'Cost and selling price per colour and size', () => nav.push('prices', { id })],
     ['edit', 'Edit details', 'Name, category, alert levels', () => nav.push('productForm', { id })],
+    ['history', 'Merge into another product', 'For duplicates: combine stock, sales and history', () => nav.push('merge', { productId: id })],
   ];
 
   return (
@@ -665,12 +667,14 @@ const MOVE_TYPES = {
   count: { label: 'Quantity update', tone: 'low' },
   removed: { label: 'Removed', tone: 'muted' },
   cancelled: { label: 'Sale cancelled', tone: 'info' },
+  merged: { label: 'Merged', tone: 'info' },
 };
 export function movementType(m) {
   if (m.reason === 'Sold') return 'sale';
   if (m.reason === 'Received' || m.reason === 'Opening stock') return 'received';
   if (m.reason === 'Stock count') return 'count';
   if (m.reason === 'Sale cancelled') return 'cancelled';
+  if (m.reason === 'Merged') return 'merged';
   return 'removed';
 }
 const TYPE_FILTERS = [
@@ -732,6 +736,8 @@ function describe(m, s) {
       return `${n} received${supplier ? ` from ${supplier}` : ''}${m.boughtOn ? `, bought ${fmtDate(m.boughtOn)}` : ''}${m.unitCost != null ? ` at ${money(m.unitCost)} each` : ''}`;
     case 'count':
       return m.before != null ? `Counted ${m.after}, app had ${m.before}` : `Count corrected by ${m.change > 0 ? '+' : ''}${m.change}`;
+    case 'merged':
+      return m.note;
     case 'cancelled':
       return `Sale${customer ? ` to ${customer}` : ''}${m.saleDate ? ` on ${fmtDate(m.saleDate)}` : ''} cancelled, ${n} back in stock`;
     default:
@@ -764,15 +770,65 @@ function MovementList({ moves, showProduct }) {
                 {showProduct ? `${m.productName} · ` : ''}{variantLabel(m.size, p)}
               </div>
               <div className="move-text">{describe(m, s)}</div>
-              <div className="row-sub">{fmtDate(m.date)} {fmtTime(m.date)}{m.by ? ` · ${m.by}` : ''}{m.note && t !== 'received' ? ` · ${m.note}` : ''}</div>
+              <div className="row-sub">{fmtDate(m.date)} {fmtTime(m.date)}{m.by ? ` · ${m.by}` : ''}{m.note && t !== 'received' && t !== 'merged' ? ` · ${m.note}` : ''}{m.mergedFrom ? ` · was "${m.mergedFrom}"` : ''}</div>
             </div>
             <div className="row-end move-end">
-              <div className={`diff ${m.change > 0 ? 'up' : 'down'}`}>{m.change > 0 ? '+' : ''}{m.change}</div>
+              {m.change !== 0 && <div className={`diff ${m.change > 0 ? 'up' : 'down'}`}>{m.change > 0 ? '+' : ''}{m.change}</div>}
               {m.before != null && <div className="move-stock">{m.before} → {m.after}</div>}
             </div>
           </Tag>
         );
       })}
     </div>
+  );
+}
+
+/* ---------- Merge a duplicate product into another ---------- */
+export function MergeProduct({ productId }) {
+  const s = useStore();
+  const nav = useNav();
+  const [picking, setPicking] = useState(false);
+  const [target, setTarget] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const p = s.productById?.[productId];
+  if (s.loading) return (<><Header title="Merge" /><Loading /></>);
+  if (!p) return (<><Header title="Merge" /><Empty>This product has already been merged or deleted.</Empty></>);
+  const t = target ? s.productById[target] : null;
+
+  async function merge() {
+    if (!navigator.onLine) return alert('Merging needs internet, so two phones cannot merge at the same time. Try again when online.');
+    if (!confirm(`Merge "${p.name}" into "${t.name}"? "${p.name}" will be removed and its stock, sales, deliveries and history moved to "${t.name}".`)) return;
+    setBusy(true);
+    try {
+      await mergeProducts(p.id, t.id);
+      nav.replace('product', { id: t.id, tab: 'stock' });
+    } catch (e) {
+      alert('Could not merge: ' + e.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Header title="Merge product" />
+      <Page>
+        <p className="muted small">
+          Use this when the same item was entered twice. Stock for matching colours and sizes is added together; sales, deliveries and
+          history move across. Needs internet.
+        </p>
+        <div className="card">
+          <div className="kv"><span>Merge</span><b>{p.name} ({totalStock(p)} in stock)</b></div>
+          <div className="kv"><span>Into</span><b>{t ? `${t.name} (${totalStock(t)} in stock)` : 'Not chosen'}</b></div>
+        </div>
+        <button className="btn block" onClick={() => setPicking(true)}>{t ? 'Choose a different product' : 'Choose product to keep'}</button>
+        <button className="btn primary block" disabled={!t || busy} onClick={merge}>{busy ? 'Merging…' : 'Merge'}</button>
+        {picking && (
+          <ProductPicker
+            onClose={() => setPicking(false)}
+            onPick={(x) => { if (x.id === p.id) return alert('Choose a different product.'); setTarget(x.id); setPicking(false); }}
+          />
+        )}
+      </Page>
+    </>
   );
 }

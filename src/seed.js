@@ -51,7 +51,6 @@ const rows = [
   ['zara', 'Mirror brown sling', { 38: 1 }],
   ['zara', 'Transparent with silver bowtie', { 37: 1, 38: 1, 40: 1 }],
   ['zara', 'Slipper heel transparent side brooch', { 40: 1 }],
-  ['zara', 'Black sling', { 39: 2 }],
   ['zara', 'Brown sling', { 36: 3, 37: 1 }],
   ['zara', 'Brown half', { 36: 1, 40: 1, 41: 1 }],
   ['zara', 'Black half bowtie', { 37: 1 }],
@@ -60,7 +59,7 @@ const rows = [
   ['zara', 'Leopard', { 36: 1 }],
   ['zara', 'Black sling net', { 36: 1, 37: 1, 38: 1, 39: 1, 42: 2 }],
   ['zara', 'Mirror nude sling', { 38: 1, 39: 1, 40: 1 }],
-  ['zara', 'Black sling (2)', { 37: 1, 39: 2, 40: 2, 42: 2 }],
+  ['zara', 'Black sling', { 37: 1, 39: 4, 40: 2, 42: 2 }], // two lines on the list, merged
   ['zara', 'White sling', { 40: 1, 42: 1 }],
 
   // Mei = 6

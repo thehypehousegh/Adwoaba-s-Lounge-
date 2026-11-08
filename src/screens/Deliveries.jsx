@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { createDelivery, createProduct, deleteExpense, openingLotId, saveCategory, saveExpense, updateDelivery, useStore } from '../store.jsx';
+import { createDelivery, createProduct, deleteExpense, deliveryLotId, saveCategory, saveExpense, updateDelivery, useStore } from '../store.jsx';
 import { Empty, Field, Header, Icon, Loading, Modal, Page, ProductPicker, SearchBox, useNav } from '../ui.jsx';
 import {
   COMMON_SIZES,
@@ -312,7 +312,7 @@ export function DeliveryDetail({ id }) {
   if (s.loading) return (<><Header title="Delivery" /><Loading /></>);
   const d = s.deliveries.find((x) => x.id === id);
   if (!d) return (<><Header title="Delivery" /><Empty>Delivery not found.</Empty></>);
-  const lotOf = (i, it) => s.lotById[d.id === OPENING_DELIVERY_ID ? openingLotId(it.productId, it.variant) : `${d.id}-${i}`];
+  const lotOf = (i, it) => s.lotById[deliveryLotId(d, it, i)];
   const share = (() => {
     const qty = pieces(d);
     const spread = sum((d.otherCosts || []).filter((c) => c.mode === 'spread'), (c) => c.amount);
