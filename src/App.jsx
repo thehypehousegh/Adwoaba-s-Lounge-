@@ -35,6 +35,7 @@ const SCREENS = {
   count: StockCount,
   history: StockHistory,
   newSale: NewSale,
+  saleEdit: NewSale,
   sale: SaleDetail,
   customers: CustomerList,
   customer: CustomerDetail,

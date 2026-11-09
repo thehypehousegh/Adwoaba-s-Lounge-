@@ -15,7 +15,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from './firebase.js';
-import { OPENING_DELIVERY_ID, productAlerts, sum, variantCost } from './util.js';
+import { OPENING_DELIVERY_ID, allocateFIFO, productAlerts, sum, variantCost } from './util.js';
 import { seed } from './seed.js';
 
 const StoreCtx = createContext(null);
@@ -436,32 +436,145 @@ export function removeStock(product, changes, reason, note, lotsFor) {
 }
 
 /* Sales. Each item already carries `lots: [{lotId, qty}]` (oldest delivery first). */
-export function createSale(sale, productById) {
-  const id = newId('sales');
+/** Cost per piece for an item taken from these lots (null if any part has no cost). */
+function allocatedCost(it, lots, lotById, product) {
+  let cost = 0;
+  let lotted = 0;
+  for (const r of lots) {
+    const c = lotById[r.lotId]?.unitCost ?? variantCost(product, it.size);
+    if (c == null) return null;
+    cost += c * r.qty;
+    lotted += r.qty;
+  }
+  if (lotted < it.qty) {
+    const c = variantCost(product, it.size);
+    if (c == null) return null;
+    cost += c * (it.qty - lotted);
+  }
+  return cost / it.qty;
+}
+
+/**
+ * Create a sale, or save changes to one (pass `old`). Items are taken from the oldest
+ * deliveries first; when editing, the old items are first put back, so stock, deliveries
+ * and history only change by the difference.
+ * ctx: { productById, lotsFor, lotById }
+ */
+/** Items with the deliveries (lots) they would be taken from, oldest first. Used to save and to preview profit. */
+export function allocateItems(saleItems, ctx, old = null) {
+  const giveBack = {};
+  for (const it of old?.items || []) for (const r of it.lots || []) giveBack[r.lotId] = (giveBack[r.lotId] || 0) + r.qty;
+  const pool = {};
+  const items = saleItems.map(({ lots: _old, cost: _c, ...it }) => {
+    const key = it.productId + '|' + it.size;
+    pool[key] = pool[key] || ctx.lotsFor(it.productId, it.size).map((l) => ({ ...l, remaining: l.remaining + (giveBack[l.id] || 0) }));
+    const lots = allocateFIFO(pool[key], it.qty);
+    return { ...it, lots, cost: allocatedCost(it, lots, ctx.lotById, ctx.productById[it.productId]) };
+  });
+  return { items, giveBack };
+}
+
+export function saveSale(sale, ctx, old = null) {
+  const id = old?.id || newId('sales');
   const bt = batcher();
-  const track = stockTracker(productById);
-  bt.op((b) => b.set(doc(db, 'sales', id), { ...sale, by: by(), createdAt: now() }));
+  const track = stockTracker(ctx.productById);
+  const { items, giveBack } = allocateItems(sale.items, ctx, old);
+
+  // Net change per lot and per product/size.
+  const lotDelta = {};
+  for (const [lotId, q] of Object.entries(giveBack)) lotDelta[lotId] = (lotDelta[lotId] || 0) + q;
+  for (const it of items) for (const r of it.lots) lotDelta[r.lotId] = (lotDelta[r.lotId] || 0) - r.qty;
+  for (const [lotId, d] of Object.entries(lotDelta)) {
+    if (d && ctx.lotById[lotId]) bt.op((b) => b.update(doc(db, 'lots', lotId), { remaining: increment(d) }));
+  }
+  const qtyOf = (list) => {
+    const m = {};
+    for (const it of list) {
+      const k = it.productId + '|' + it.size;
+      m[k] = m[k] || { productId: it.productId, productName: it.productName, size: it.size, qty: 0, price: it.price };
+      m[k].qty += it.qty;
+    }
+    return m;
+  };
+  const before = qtyOf(old?.items || []);
+  const after = qtyOf(items);
   const perProduct = {};
-  for (const it of sale.items) {
-    perProduct[it.productId] = perProduct[it.productId] || {};
-    perProduct[it.productId][it.size] = (perProduct[it.productId][it.size] || 0) - it.qty;
-    for (const r of it.lots || []) bt.op((b) => b.update(doc(db, 'lots', r.lotId), { remaining: increment(-r.qty) }));
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const x = after[k] || before[k];
+    const sold = (after[k]?.qty || 0) - (before[k]?.qty || 0);
+    if (!sold || !ctx.productById[x.productId]) continue;
+    perProduct[x.productId] = perProduct[x.productId] || {};
+    perProduct[x.productId][x.size] = (perProduct[x.productId][x.size] || 0) - sold;
     movement(bt, {
-      productId: it.productId,
-      productName: it.productName,
-      size: it.size,
-      change: -it.qty,
-      reason: 'Sold',
+      productId: x.productId,
+      productName: x.productName,
+      size: x.size,
+      change: -sold,
+      reason: old ? 'Sale edited' : 'Sold',
       saleId: id,
       customerName: sale.customerName || '',
-      price: it.price ?? null,
-      date: sale.date,
-      ...track(it.productId, it.size, -it.qty),
+      price: after[k]?.price ?? null,
+      date: old ? now() : sale.date,
+      ...track(x.productId, x.size, -sold),
     });
   }
   for (const [pid, stock] of Object.entries(perProduct)) productUpdate(bt, pid, { stock });
+
+  const total = sum(items, (it) => (it.price == null ? 0 : it.qty * it.price));
+  const docData = {
+    ...sale,
+    items,
+    total,
+    priceMissing: items.some((it) => it.price == null),
+    expensesTotal: sum(sale.expenses || [], (e) => e.amount),
+  };
+  if (old) {
+    bt.op((b) => b.set(doc(db, 'sales', id), { ...docData, by: old.by || '', createdAt: old.createdAt ?? now(), editedBy: by(), editedAt: now() }));
+  } else {
+    bt.op((b) => b.set(doc(db, 'sales', id), { ...docData, by: by(), createdAt: now() }));
+  }
   bt.commit();
   return id;
+}
+
+/** Find a customer by phone or name; add a new one if neither matches. Returns the id or null. */
+export function upsertCustomer(name, phone, customers, extra = {}) {
+  const n = (name || '').trim();
+  const ph = (phone || '').trim();
+  if (!n && !ph) return null;
+  const digits = (x) => (x || '').replace(/\D/g, '').replace(/^233/, '0');
+  const match =
+    (ph && customers.find((c) => c.phone && digits(c.phone) === digits(ph))) ||
+    (n && customers.find((c) => (c.name || '').trim().toLowerCase() === n.toLowerCase()));
+  if (match) {
+    const fill = {};
+    if (ph && !match.phone) fill.phone = ph;
+    if (n && !match.name) fill.name = n;
+    if (extra.address && !match.address) fill.address = extra.address;
+    if (Object.keys(fill).length) saveCustomer({ id: match.id, ...fill });
+    return match.id;
+  }
+  return saveCustomer({ name: n, phone: ph, address: extra.address || '', notes: '' });
+}
+
+/** Profit of one sale: price of items minus their cost minus the order's own expenses. */
+export function saleProfit(sale, ctx) {
+  let revenue = 0;
+  let cost = 0;
+  let unknownQty = 0;
+  let missingPrice = 0;
+  for (const it of sale.items) {
+    if (it.price == null) {
+      missingPrice += it.qty;
+      continue;
+    }
+    const c = itemCost(it, ctx);
+    unknownQty += c.unknownQty;
+    revenue += (it.qty - c.unknownQty) * it.price;
+    cost += c.cost;
+  }
+  const expenses = sale.expensesTotal ?? sum(sale.expenses || [], (e) => e.amount);
+  return { revenue, cost, expenses, profit: revenue - cost - expenses, unknownQty, missingPrice };
 }
 
 export function updateSale(id, fields) {

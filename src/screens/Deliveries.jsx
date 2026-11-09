@@ -545,7 +545,7 @@ function DeliverySales({ d, lotOf }) {
           <button key={sale.id + i} className="row" onClick={() => nav.push('sale', { id: sale.id })}>
             <div className="row-main">
               <div className="row-title">{it.productName} · {variantLabel(it.size, s.productById[it.productId])} × {q}</div>
-              <div className="row-sub">{fmtDate(sale.date)} · {sale.customerName || 'Walk-in'}</div>
+              <div className="row-sub">{fmtDate(sale.date)} · {sale.customerName || sale.customerPhone || 'Unnamed customer'}</div>
             </div>
             <div className="row-end">{it.price == null ? <span className="pill out">No price</span> : money(q * it.price)}</div>
           </button>

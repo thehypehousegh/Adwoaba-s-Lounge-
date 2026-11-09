@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { itemCost, useStore } from '../store.jsx';
+import { ORDER_TYPES, customerLabel, orderType } from './Sales.jsx';
 import { Chips, Field, Header, Loading, Page, Stat } from '../ui.jsx';
 import { deliveryGoods } from './Deliveries.jsx';
 import {
@@ -58,13 +59,16 @@ export default function Reports() {
     const sales = s.sales.filter(inRange);
     const o = {
       sales, count: sales.length, revenue: 0, units: 0, cogs: 0, costedRevenue: 0, unknownCostQty: 0, missingPrice: 0,
-      byPayment: {}, byCategory: {}, byProduct: {}, byDay: {}, byCustomer: {}, byDelivery: {}, bySize: {}, bySupplier: {},
+      byPayment: {}, byCategory: {}, byProduct: {}, byDay: {}, byCustomer: {}, byDelivery: {}, bySize: {}, bySupplier: {}, byOrderType: {},
+      saleExpenses: 0,
     };
     for (const sale of sales) {
       o.revenue += sale.total || 0;
       addTo(o.byPayment, sale.paymentMethod || 'Other', { revenue: sale.total || 0, count: 1 });
       addTo(o.byDay, startOfDay(sale.date), { revenue: sale.total || 0, count: 1 });
-      if (sale.customerId) addTo(o.byCustomer, sale.customerName, { revenue: sale.total || 0, count: 1 });
+      if (sale.customerId || sale.customerName) addTo(o.byCustomer, customerLabel(sale), { revenue: sale.total || 0, count: 1 });
+      addTo(o.byOrderType, ORDER_TYPES.find((t) => t.value === orderType(sale))?.label, { revenue: sale.total || 0, count: 1, amount: sale.expensesTotal || 0 });
+      o.saleExpenses += sale.expensesTotal || sum(sale.expenses || [], (e) => e.amount);
       if (sale.delivery) addTo(o.byDelivery, sale.delivery.status, { count: 1 });
       for (const it of sale.items) {
         const line = it.price == null ? 0 : it.qty * it.price;
@@ -83,7 +87,7 @@ export default function Reports() {
         addTo(o.bySize, sizeLabel(it.size, s.productById[it.productId]), { qty: it.qty });
       }
     }
-    o.gross = o.costedRevenue - o.cogs;
+    o.gross = o.costedRevenue - o.cogs - o.saleExpenses;
 
     // Expenses: shop expenses + delivery other costs marked "expense", dated in the period.
     const expenses = s.expenses.filter(inRange);
@@ -139,6 +143,7 @@ export default function Reports() {
     o.category = sortBy(o.byCategory, 'revenue');
     o.product = sortBy(o.byProduct, 'qty');
     o.customer = sortBy(o.byCustomer, 'revenue').slice(0, 10);
+    o.orderTypes = sortBy(o.byOrderType, 'revenue');
     o.deliveryStatus = sortBy(o.byDelivery, 'count');
     o.size = sortBy(o.bySize, 'qty');
     o.supplier = sortBy(o.bySupplier, 'cost');
@@ -155,7 +160,7 @@ export default function Reports() {
         const { cost, unknownQty } = itemCost(it, s);
         const line = it.price == null ? '' : it.qty * it.price;
         rows.push([
-          fmtDate(sale.date), fmtTime(sale.date), sale.customerName || 'Walk-in', sale.customerPhone || '',
+          fmtDate(sale.date), fmtTime(sale.date), customerLabel(sale), sale.customerPhone || '',
           it.productName, s.catName[it.categoryId] || '', sizeLabel(it.size, s.productById[it.productId]), it.qty, it.price ?? 'missing', line,
           unknownQty ? '' : cost, unknownQty || line === '' ? '' : line - cost,
           sale.paymentMethod, sale.delivery?.name || '', sale.delivery?.address || '', sale.delivery?.status || '', sale.note || '', sale.by || '',
@@ -210,7 +215,7 @@ export default function Reports() {
 
         <div className="stats">
           <Stat label="Sales" value={money(r.revenue)} sub={`${r.count} sale${r.count === 1 ? '' : 's'} · ${r.units} items`} />
-          <Stat label="Gross profit" value={money(r.gross)} sub="Sales minus cost of items sold" />
+          <Stat label="Gross profit" value={money(r.gross)} sub="Sales minus item costs and sale expenses" />
           <Stat label="Expenses" value={money(r.expensesTotal)} sub={`Shop ${money(r.shopExpenses)} · Delivery ${money(r.deliveryExpenses)}`} />
           <Stat label="Net profit" value={money(r.net)} sub="Gross profit minus expenses" tone={r.net < 0 ? 'neg' : ''} />
         </div>
@@ -220,12 +225,14 @@ export default function Reports() {
           <div className="kv"><span>Sales</span><b>{money(r.revenue)}</b></div>
           {r.costedRevenue !== r.revenue && <div className="kv"><span>Sales with known cost</span><b>{money(r.costedRevenue)}</b></div>}
           <div className="kv"><span>Cost of items sold</span><b>− {money(r.cogs)}</b></div>
+          <div className="kv"><span>Expenses on sales (rider, packaging…)</span><b>− {money(r.saleExpenses)}</b></div>
           <div className="kv total"><span>Gross profit</span><b>{money(r.gross)}</b></div>
           <div className="kv"><span>Expenses</span><b>− {money(r.expensesTotal)}</b></div>
           <div className="kv total"><span>Net profit</span><b>{money(r.net)}</b></div>
         </div>
 
         <Table title="By category" cols={['Category', 'Qty', 'Sales']} rows={r.category.map((x) => [x.key, x.qty, money(x.revenue)])} />
+        <Table title="By order type" cols={['Type', 'Sales', 'Amount', 'Expenses']} rows={r.orderTypes.map((x) => [x.key, x.count, money(x.revenue), money(x.amount)])} />
         <Table title="By payment method" cols={['Method', 'Sales', 'Amount']} rows={r.payment.map((x) => [x.key, x.count, money(x.revenue)])} />
         <Table title="Products sold" cols={['Product', 'Qty', 'Sales']} rows={r.product.map((x) => [x.key, x.qty, money(x.revenue)])} />
         <Table title="Colours & sizes sold" cols={['Colour / size', 'Qty']} rows={r.size.map((x) => [x.key, x.qty])} />

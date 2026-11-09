@@ -2,7 +2,7 @@ import React from 'react';
 import { useStore } from '../store.jsx';
 import { Card, Header, Icon, Loading, Page, Stat, useNav } from '../ui.jsx';
 import { fmtTime, money, startOfDay, totalStock } from '../util.js';
-import { SaleRow } from './Sales.jsx';
+import { SaleRow, deliveryPending, pickupPending } from './Sales.jsx';
 
 export default function Home() {
   const s = useStore();
@@ -13,7 +13,8 @@ export default function Home() {
   const todaySales = s.sales.filter((x) => x.date >= today);
   const todayTotal = todaySales.reduce((a, x) => a + (x.total || 0), 0);
   const units = s.products.reduce((a, p) => a + totalStock(p), 0);
-  const pendingDeliveries = s.sales.filter((x) => x.delivery && !['Delivered', 'Cancelled'].includes(x.delivery.status)).length;
+  const pendingDeliveries = s.sales.filter(deliveryPending).length;
+  const pendingPickups = s.sales.filter(pickupPending).length;
   const missingPrices = s.sales.filter((x) => x.priceMissing).length;
   const outCount = s.alerts.filter((a) => a.alerts.some((x) => x.level === 'out')).length;
 
@@ -68,6 +69,15 @@ export default function Home() {
             <Icon name="truck" />
             <div>
               <strong>{pendingDeliveries} customer deliver{pendingDeliveries === 1 ? 'y' : 'ies'} not yet delivered</strong>
+              <div className="row-sub">Tap to see them.</div>
+            </div>
+          </Card>
+        )}
+        {pendingPickups > 0 && (
+          <Card onClick={() => nav.push('sales', { pushed: true, initialFilter: 'pickups' })} className="info-card">
+            <Icon name="box" />
+            <div>
+              <strong>{pendingPickups} order{pendingPickups === 1 ? '' : 's'} waiting for pick-up</strong>
               <div className="row-sub">Tap to see them.</div>
             </div>
           </Card>

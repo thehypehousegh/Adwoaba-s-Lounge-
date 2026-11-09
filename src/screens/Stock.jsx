@@ -259,11 +259,13 @@ export function ProductDetail({ id, tab: initialTab = 'stock' }) {
   const soldValue = sum(lines, (l) => (l.it.price == null ? 0 : l.it.qty * l.it.price));
   let profit = 0;
   let unknown = 0;
-  for (const { it } of lines) {
+  for (const { sale, it } of lines) {
     if (it.price == null) continue;
     const c = itemCost(it, s);
     unknown += c.unknownQty;
-    profit += (it.qty - c.unknownQty) * it.price - c.cost;
+    // This item's share of the sale's own expenses, by value.
+    const share = sale.total ? (it.qty * it.price) / sale.total : 0;
+    profit += (it.qty - c.unknownQty) * it.price - c.cost - share * (sale.expensesTotal || 0);
   }
   const lots = s.lots.filter((l) => l.productId === id).sort((a, b) => b.date - a.date);
 
@@ -327,7 +329,7 @@ export function ProductDetail({ id, tab: initialTab = 'stock' }) {
                 <button key={sale.id + i} className="row" onClick={() => nav.push('sale', { id: sale.id })}>
                   <div className="row-main">
                     <div className="row-title">{variantLabel(it.size, p)} × {it.qty}</div>
-                    <div className="row-sub">{fmtDate(sale.date)} · {sale.customerName || 'Walk-in'} · {sale.paymentMethod}</div>
+                    <div className="row-sub">{fmtDate(sale.date)} · {sale.customerName || sale.customerPhone || 'Unnamed customer'} · {sale.paymentMethod}</div>
                   </div>
                   <div className="row-end">{it.price == null ? <span className="pill out">No price</span> : money(it.qty * it.price)}</div>
                 </button>
@@ -670,7 +672,7 @@ const MOVE_TYPES = {
   merged: { label: 'Merged', tone: 'info' },
 };
 export function movementType(m) {
-  if (m.reason === 'Sold') return 'sale';
+  if (m.reason === 'Sold' || m.reason === 'Sale edited') return 'sale';
   if (m.reason === 'Received' || m.reason === 'Opening stock') return 'received';
   if (m.reason === 'Stock count') return 'count';
   if (m.reason === 'Sale cancelled') return 'cancelled';
@@ -730,7 +732,8 @@ function describe(m, s) {
   const supplier = m.supplier || delivery?.supplier || (m.note?.startsWith('From ') ? m.note.slice(5) : '');
   switch (t) {
     case 'sale':
-      return `Sold ${n} to ${customer || 'walk-in customer'}${m.price != null ? ` at ${money(m.price)} each` : ''}`;
+      if (m.reason === 'Sale edited') return m.change < 0 ? `Sale to ${customer || 'customer'} edited: ${n} more sold` : `Sale to ${customer || 'customer'} edited: ${n} fewer sold, back in stock`;
+      return `Sold ${n} to ${customer || 'unnamed customer'}${m.price != null ? ` at ${money(m.price)} each` : ''}`;
     case 'received':
       if (m.reason === 'Opening stock') return `Opening stock: ${n} pieces (${m.note || 'stocktake'})`;
       return `${n} received${supplier ? ` from ${supplier}` : ''}${m.boughtOn ? `, bought ${fmtDate(m.boughtOn)}` : ''}${m.unitCost != null ? ` at ${money(m.unitCost)} each` : ''}`;
